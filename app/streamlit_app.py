@@ -1,4 +1,4 @@
-"""WebRTC dashboard for Hybrid Driver Drowsiness Detection.
+﻿"""WebRTC dashboard for Hybrid Driver Drowsiness Detection.
 
 Run from the project root:
     .venv/Scripts/python.exe -m streamlit run app/streamlit_app.py
@@ -17,12 +17,14 @@ import mediapipe as mp
 import numpy as np
 import pandas as pd
 import streamlit as st
+import av
+from streamlit_webrtc import VideoProcessorBase, WebRtcMode, webrtc_streamer
+from streamlit_geolocation import streamlit_geolocation
 
 from app.main import (
     LEFT_EYE, RIGHT_EYE, MOUTH, FACE_OVAL, POSE_IDS,
     ear, dist, head_pose, get_dl_stage, OptionalModel, EmergencyEmailAlert,
 )
-from app.location import WindowsLocation
 from app.auth import require_login
 
 
@@ -59,6 +61,39 @@ def risk_css(name: str) -> str:
     return f"risk-{name.lower()}"
 
 
+class BrowserLocation:
+    """Stores coordinates explicitly shared by the browser."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.data = None
+
+    def start(self):
+        pass
+
+    def update(self, coordinates):
+        try:
+            data = {
+                "latitude": float(coordinates["latitude"]),
+                "longitude": float(coordinates["longitude"]),
+                "accuracy": float(coordinates.get("accuracy") or 0),
+                "timestamp": time.time(),
+            }
+            with self.lock:
+                self.data = data
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    def get_latest(self, max_age=90):
+        with self.lock:
+            data = self.data.copy() if self.data else None
+        if data is None or time.time() - data["timestamp"] > max_age:
+            return None
+        return data
+
+    def stop(self):
+        pass
+
+
 class DrowsinessVideoProcessor:
     """One processor instance per WebRTC session.
 
@@ -79,7 +114,7 @@ class DrowsinessVideoProcessor:
         self._dl_lock = threading.Lock()
         self._dl_busy = False
         self.email_alert = EmergencyEmailAlert(recipient=emergency_email)
-        self.location = WindowsLocation(refresh_seconds=20)
+        self.location = BrowserLocation()
         self.location_status = "STARTING"
 
         self._mesh_thread = threading.Thread(
@@ -190,11 +225,7 @@ class DrowsinessVideoProcessor:
             self.last_error = f"MobileNetV2 initialization failed: {exc}"
 
     def _initialize_location(self):
-        try:
-            self.location.start()
-            self.location_status = "SEARCHING FOR LOCATION"
-        except Exception as exc:
-            self.location_status = f"ERROR: {exc}"
+        self.location_status = "WAITING FOR BROWSER LOCATION"
 
     def _run_dl_prediction(self, crop: np.ndarray):
         try:
@@ -473,6 +504,86 @@ class DrowsinessVideoProcessor:
         )
         return frame
 
+    def start_browser(self):
+        """Start background processing for annotated browser frames."""
+        if self.closed:
+            return
+
+        self._start_workers()
+
+        if self.processing_thread is None or not self.processing_thread.is_alive():
+            self.processing_thread = threading.Thread(
+                target=self._processing_loop,
+                name="BrowserFrameProcessor",
+                daemon=True,
+            )
+            self.processing_thread.start()
+
+        self.camera_status = "WAITING FOR BROWSER CAMERA"
+
+    def process_browser_frame(self, frame_bgr):
+        """Display the newest browser frame with the latest CV annotations."""
+        if self.closed:
+            return frame_bgr
+
+        if not self._workers_started:
+            self._start_workers()
+
+        # Send the newest frame to the background CV processing worker.
+        with self.raw_frame_lock:
+            self.raw_frame = frame_bgr.copy()
+            self.raw_frame_sequence += 1
+
+        self.camera_status = "CAMERA CONNECTED"
+
+        # Always display the current camera frame, not a stale processed frame.
+        frame = cv2.flip(frame_bgr, 1)
+        h, w = frame.shape[:2]
+
+        # Reuse the most recently detected FaceMesh landmarks.
+        cached = getattr(self, "_cached_landmarks", None)
+        if cached:
+            points = [(int(x * w), int(y * h)) for x, y in cached]
+
+            for idx in LEFT_EYE + RIGHT_EYE + MOUTH + POSE_IDS:
+                cv2.circle(frame, points[idx], 2, (0, 220, 255), -1)
+
+            for idx in FACE_OVAL:
+                cv2.circle(frame, points[idx], 2, (40, 220, 130), -1)
+
+        # Draw the current risk and live metric values over the fresh frame.
+        risk_name = RISK_NAMES[self.risk]
+        color = RISK_COLORS[self.risk]
+
+        cv2.rectangle(frame, (0, 0), (w, 48), (8, 18, 35), -1)
+
+        status_text = self.face_state
+        if self.mesh is None:
+            status_text = "INITIALIZING FACEMESH"
+
+        cv2.putText(
+            frame,
+            f"DRIVER RISK: {risk_name} | {status_text}",
+            (16, 32),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.72,
+            color,
+            2,
+        )
+
+        cv2.putText(
+            frame,
+            f"EAR {self.ear_value:.3f}  MAR {self.mar_value:.3f}  "
+            f"PERCLOS {self.perclos:.2f}  FPS {self.processing_fps:.1f}",
+            (16, h - 18),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (245, 245, 245),
+            2,
+        )
+
+        return frame
+
     def start_camera(self):
         """Start independent webcam capture and frame-processing workers."""
         if self.closed or (self.camera_thread and self.camera_thread.is_alive()):
@@ -743,6 +854,17 @@ class DrowsinessVideoProcessor:
 
 # ---------------------------------------------------------------------
 # ---------------------------------------------------------------------
+
+
+class BrowserVideoProcessor(VideoProcessorBase):
+    """Receives browser webcam frames and runs the existing detector."""
+    def __init__(self, processor):
+        self.processor = processor
+
+    def recv(self, frame):
+        image = frame.to_ndarray(format="bgr24")
+        processed = self.processor.process_browser_frame(image)
+        return av.VideoFrame.from_ndarray(processed, format="bgr24")
 
 
 class _MJPEGHandler(BaseHTTPRequestHandler):
@@ -1088,7 +1210,7 @@ if start_clicked:
         emergency_email=user["emergency_email"]
     )
     st.session_state.drowsiness_processor = processor
-    processor.start_camera()
+    processor.start_browser()
     st.rerun()
 
 if stop_clicked:
@@ -1100,6 +1222,14 @@ if stop_clicked:
     st.rerun()
 
 active_processor = st.session_state.drowsiness_processor
+
+# Request the driver's location from their browser.
+if active_processor is not None:
+    st.caption("Share browser location for emergency email alerts:")
+    browser_location = streamlit_geolocation()
+    if isinstance(browser_location, dict) and browser_location.get("latitude") is not None:
+        active_processor.location.update(browser_location)
+        active_processor.location_status = "BROWSER LOCATION READY"
 
 with camera_status_col:
     if active_processor is None:
@@ -1121,19 +1251,32 @@ with camera_col:
 
     if active_processor is not None:
         try:
-            server = _get_mjpeg_server()
-            server.RequestHandlerClass.processor = active_processor
-
-            st.components.v1.html(
-                '<img src="http://127.0.0.1:8765/video" '
-                'style="display:block;width:100%;height:auto;'
-                'border-radius:12px;background:#0b1420;" '
-                'alt="Live driver monitoring video">',
-                height=490,
-                scrolling=False,
+            webrtc_ctx = webrtc_streamer(
+                key=f"driver-monitor-{id(active_processor)}",
+                mode=WebRtcMode.SENDRECV,
+                video_processor_factory=lambda: BrowserVideoProcessor(active_processor),
+                media_stream_constraints={
+                    "video": {
+                        "width": {"ideal": 480, "max": 480},
+                        "height": {"ideal": 360, "max": 360},
+                        "frameRate": {"ideal": 30, "max": 30},
+                    },
+                    "audio": False,
+                },
+                rtc_configuration={
+                    "iceServers": [
+                        {"urls": ["stun:stun.l.google.com:19302"]}
+                    ]
+                },
+                video_receiver_size=1,
+                async_processing=True,
             )
+
+            st.write("WebRTC playing:", webrtc_ctx.state.playing)
+            st.write("WebRTC state:", webrtc_ctx.state)
+            st.write("Camera status:", active_processor.camera_status)
         except Exception as exc:
-            st.error(f"Video display error: {exc}")
+            st.error(f"Browser camera error: {exc}")
     else:
         st.markdown("""
         <div style="
@@ -1434,3 +1577,6 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True,
 )
+
+
+
