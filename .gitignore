@@ -1,0 +1,64 @@
+﻿# Environment variables and secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Private databases and user information
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Datasets and private data
+data/*
+!data/.gitkeep
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Backup files
+*.bak
+*.backup
+*.voice-backup
+*.voice_backup
+*before_*.py
+*backup_*.py
+
+# IDE and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Generated training outputs
+outputs/**
+!outputs/training/
+!outputs/training/nthu_loso/
+!outputs/training/nthu_loso/fold_1/
+!outputs/training/nthu_loso/fold_1/mobilenetv2/
+outputs/training/nthu_loso/fold_1/mobilenetv2/*
+!outputs/training/nthu_loso/fold_1/mobilenetv2/phase2_best.keras
+
+# Additional Python backup files
+*.py.bak
+*.py.backup
+*.bak.*
+
+# Additional backup files
+*_backup.py
