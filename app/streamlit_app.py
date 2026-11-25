@@ -1,4 +1,4 @@
-﻿"""WebRTC dashboard for Hybrid Driver Drowsiness Detection.
+"""WebRTC dashboard for Hybrid Driver Drowsiness Detection.
 
 Run from the project root:
     .venv/Scripts/python.exe -m streamlit run app/streamlit_app.py
@@ -6,6 +6,12 @@ Run from the project root:
 from __future__ import annotations
 
 import os
+import sys
+
+# Ensure project root is available for Streamlit Cloud imports
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
