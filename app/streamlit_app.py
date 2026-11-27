@@ -37,7 +37,6 @@ from app.auth import require_login
 # ---------------------------------------------------------------------
 st.set_page_config(
     page_title="DriveGuard AI | Driver Safety",
-    page_icon="??",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -866,10 +865,28 @@ class BrowserVideoProcessor(VideoProcessorBase):
     """Receives browser webcam frames and runs the existing detector."""
     def __init__(self, processor):
         self.processor = processor
+        self._debug_frame_count = 0
+        self._debug_report_started = time.perf_counter()
 
     def recv(self, frame):
+        frame_started = time.perf_counter()
         image = frame.to_ndarray(format="bgr24")
         processed = self.processor.process_browser_frame(image)
+        self._debug_frame_count += 1
+
+        if self._debug_frame_count % 60 == 0:
+            now = time.perf_counter()
+            elapsed = now - self._debug_report_started
+            incoming_fps = 60.0 / elapsed if elapsed > 0 else 0.0
+            process_ms = (now - frame_started) * 1000.0
+            h, w = image.shape[:2]
+            print(
+                f"[BROWSER CAMERA DEBUG] Resolution={w}x{h} | "
+                f"Incoming FPS={incoming_fps:.1f} | "
+                f"Last frame processing={process_ms:.1f} ms | "
+                f"Frames={self._debug_frame_count}"
+            )
+            self._debug_report_started = now
         return av.VideoFrame.from_ndarray(processed, format="bgr24")
 
 
@@ -1181,7 +1198,7 @@ footer, #MainMenu {
 
 st.markdown(
     '<div class="hero">'
-    '<div class="hero-title">?? DRIVEGUARD AI</div>'
+    '<div class="hero-title">DRIVEGUARD AI</div>'
     '<div class="hero-sub">HYBRID DRIVER SAFETY MONITORING SYSTEM</div>'
     '</div>',
     unsafe_allow_html=True,
@@ -1195,14 +1212,14 @@ start_col, stop_col, camera_status_col = st.columns([1, 1, 4])
 
 with start_col:
     start_clicked = st.button(
-        "? START MONITORING",
+        "START MONITORING",
         type="primary",
         use_container_width=True
     )
 
 with stop_col:
     stop_clicked = st.button(
-        "? STOP",
+        "STOP",
         use_container_width=True
     )
 
@@ -1239,9 +1256,9 @@ if active_processor is not None:
 
 with camera_status_col:
     if active_processor is None:
-        st.caption("? MONITORING STOPPED")
+        st.caption("MONITORING STOPPED")
     else:
-        st.caption(f"? {active_processor.camera_status}")
+        st.caption(active_processor.camera_status)
 
 st.markdown("---")
 
@@ -1263,8 +1280,8 @@ with camera_col:
                 video_processor_factory=lambda: BrowserVideoProcessor(active_processor),
                 media_stream_constraints={
                     "video": {
-                        "width": {"ideal": 480, "max": 480},
-                        "height": {"ideal": 360, "max": 360},
+                        "width": {"ideal": 960, "max": 960},
+                        "height": {"ideal": 540, "max": 540},
                         "frameRate": {"ideal": 30, "max": 30},
                     },
                     "audio": False,
@@ -1277,10 +1294,6 @@ with camera_col:
                 video_receiver_size=1,
                 async_processing=True,
             )
-
-            st.write("WebRTC playing:", webrtc_ctx.state.playing)
-            st.write("WebRTC state:", webrtc_ctx.state)
-            st.write("Camera status:", active_processor.camera_status)
         except Exception as exc:
             st.error(f"Browser camera error: {exc}")
     else:
@@ -1296,7 +1309,6 @@ with camera_col:
             align-items:center;
             color:#829caf;
         ">
-            <div style="font-size:45px;">?</div>
             <div style="font-size:16px;font-weight:700;margin-top:12px;">
                 CAMERA STANDBY
             </div>
@@ -1505,7 +1517,7 @@ def render_detection_metrics():
         ("EAR", f'{data["ear"]:.3f}'),
         ("MAR", f'{data["mar"]:.3f}'),
         ("PERCLOS", f'{data["perclos"]:.2f}'),
-        ("HEAD PITCH", f"{pitch:.1f}?" if pitch is not None else "N/A"),
+        ("HEAD PITCH", f"{pitch:.1f} deg" if pitch is not None else "N/A"),
         ("FPS", f'{data["fps"]:.1f}'),
     ]
 
@@ -1579,10 +1591,11 @@ if active_processor is not None:
 st.markdown(
     '<div style="text-align:center;color:#71899b;'
     'font-size:11px;padding:18px;">'
-    'DRIVEGUARD AI ? HYBRID DRIVER MONITORING'
+    'DRIVEGUARD AI - HYBRID DRIVER MONITORING'
     '</div>',
     unsafe_allow_html=True,
 )
+
 
 
 
